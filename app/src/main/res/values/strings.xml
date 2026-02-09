@@ -1,0 +1,18 @@
+<resources>
+    <string name="app_name">Bluetooth Mesh Chat</string>
+    <string name="status_peers">Подключено устройств: %d</string>
+    <string name="status_searching">Поиск устройств…</string>
+    <string name="find_devices">Найти устройства</string>
+    <string name="send">Отправить</string>
+    <string name="message_hint">Сообщение</string>
+    <string name="status_discovery_running">Идёт поиск…</string>
+    <string name="found_devices_title">Найденные устройства</string>
+    <string name="found_devices_empty">Нажмите «Найти устройства». Убедитесь, что на втором телефоне/планшете Bluetooth включён и устройство «доступно для обнаружения» (в настройках Bluetooth).</string>
+    <string name="device_connected">успешно подключено</string>
+    <string name="device_connecting">подключение…</string>
+    <string name="device_connection_failed">подключение неуспешно</string>
+    <string name="notification_channel_name">Mesh-чат</string>
+    <string name="notification_channel_description">Работа меш-сети в фоне</string>
+    <string name="notification_title">Bluetooth Mesh Chat активен</string>
+    <string name="notification_text">Обмен сообщениями в mesh-сети. Нажмите, чтобы открыть.</string>
+</resources>
