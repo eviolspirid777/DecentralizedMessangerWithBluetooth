@@ -18,6 +18,11 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.BufferedReader
 import java.io.IOException
 import java.io.InputStreamReader
@@ -25,6 +30,7 @@ import java.io.OutputStream
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CopyOnWriteArraySet
+import kotlin.concurrent.thread
 
 /** Status of a discovered device for UI. */
 enum class DeviceStatus { FOUND, CONNECTING, CONNECTED, CONNECTION_FAILED }
@@ -58,6 +64,12 @@ class BluetoothMeshManager(private val context: Context) {
     private var discoveryInProgress = false
     /** Адреса устройств, с которыми инициировано сопряжение; после BOND_BONDED подключаемся. */
     private val pendingBondAddresses = CopyOnWriteArraySet<String>()
+    /** Очередь: только одно клиентское подключение одновременно, чтобы не перегружать стек Bluetooth. */
+    private val connectionMutex = Mutex()
+    /** Таймаут одной попытки подключения (мс). */
+    private val connectionTimeoutMs = 12_000L
+    /** Задержка перед попыткой сопряжения с ещё не сопряжёнными устройствами (мс). */
+    private val unbondedDelayMs = 15_000L
 
     var onMessageReceived: ((ChatMessage) -> Unit)? = null
     var onPeersCountChanged: ((Int) -> Unit)? = null
@@ -144,10 +156,26 @@ class BluetoothMeshManager(private val context: Context) {
             context.registerReceiver(discoveryReceiver, filter)
         }
         registerBondStateReceiverIfNeeded()
+        tryConnectBondedDevicesFirst()
         adapter.cancelDiscovery()
         discoveryInProgress = true
         notifyDiscoveryInProgress()
         adapter.startDiscovery()
+    }
+
+    /** Сначала ставим в очередь подключение ко всем уже сопряжённым устройствам. */
+    @SuppressLint("MissingPermission")
+    private fun tryConnectBondedDevicesFirst() {
+        adapter?.bondedDevices?.orEmpty()?.forEach { device ->
+            val address = device.address
+            if (address == getLocalAddress()) return@forEach
+            if (sockets.any { it.address == address }) return@forEach
+            if (foundDevices.any { it.address == address }) return@forEach
+            val name = device.name?.takeIf { it.isNotBlank() } ?: address
+            foundDevices.add(FoundDeviceInfo(name = name, address = address, status = DeviceStatus.FOUND))
+            notifyFoundDevices()
+            tryConnectAsClient(device)
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -186,9 +214,16 @@ class BluetoothMeshManager(private val context: Context) {
         when (device.bondState) {
             BluetoothDevice.BOND_BONDED -> tryConnectAsClient(device)
             BluetoothDevice.BOND_NONE, BluetoothDevice.BOND_BONDING -> {
-                pendingBondAddresses.add(address)
-                if (device.bondState == BluetoothDevice.BOND_NONE) {
-                    device.createBond()
+                scope.launch {
+                    delay(unbondedDelayMs)
+                    if (sockets.any { it.address == address }) return@launch
+                    when (device.bondState) {
+                        BluetoothDevice.BOND_BONDED -> tryConnectAsClient(device)
+                        BluetoothDevice.BOND_NONE -> if (pendingBondAddresses.add(address)) {
+                            device.createBond()
+                        }
+                        else -> { /* BOND_BONDING — ждём BOND_BONDED в onBondStateChanged */ }
+                    }
                 }
             }
         }
@@ -199,9 +234,8 @@ class BluetoothMeshManager(private val context: Context) {
         val address = device.address
         when (bondState) {
             BluetoothDevice.BOND_BONDED -> {
-                if (pendingBondAddresses.remove(address)) {
-                    tryConnectAsClient(device)
-                }
+                pendingBondAddresses.remove(address)
+                tryConnectAsClient(device)
             }
             BluetoothDevice.BOND_NONE -> {
                 if (pendingBondAddresses.remove(address)) {
@@ -252,14 +286,31 @@ class BluetoothMeshManager(private val context: Context) {
         if (sockets.any { it.address == address }) return
         updateDeviceStatus(address, DeviceStatus.CONNECTING)
         scope.launch {
-            var socket: BluetoothSocket? = null
-            try {
-                socket = device.createRfcommSocketToServiceRecord(serviceUuid)
-                socket?.connect()
-                socket?.let { addPeerSocket(it, device) }
-            } catch (e: IOException) {
-                try { socket?.close() } catch (_: IOException) { }
-                updateDeviceStatus(address, DeviceStatus.CONNECTION_FAILED)
+            connectionMutex.withLock {
+                if (sockets.any { it.address == address }) return@launch
+                var socket: BluetoothSocket? = null
+                try {
+                    socket = device.createRfcommSocketToServiceRecord(serviceUuid)
+                    val result = CompletableDeferred<Boolean>()
+                    thread(name = "bt-connect-$address") {
+                        try {
+                            socket?.connect()
+                            result.complete(true)
+                        } catch (_: IOException) {
+                            result.complete(false)
+                        }
+                    }
+                    val ok = withTimeoutOrNull(connectionTimeoutMs) { result.await() } == true
+                    if (ok && socket != null) {
+                        addPeerSocket(socket, device)
+                    } else {
+                        try { socket?.close() } catch (_: IOException) { }
+                        updateDeviceStatus(address, DeviceStatus.CONNECTION_FAILED)
+                    }
+                } catch (e: Exception) {
+                    try { socket?.close() } catch (_: IOException) { }
+                    updateDeviceStatus(address, DeviceStatus.CONNECTION_FAILED)
+                }
             }
         }
     }
