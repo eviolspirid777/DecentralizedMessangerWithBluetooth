@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import com.example.myapplication.R
 import com.example.myapplication.bluetooth.DeviceStatus
 import com.example.myapplication.bluetooth.FoundDeviceInfo
+import com.example.myapplication.bluetooth.RECIPIENT_ALL
 import com.example.myapplication.data.ChatMessage
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -47,6 +48,7 @@ fun ChatScreen(viewModel: ChatViewModel) {
     val localAddress = viewModel.localAddress
 
     var inputText by remember { mutableStateOf("") }
+    var recipientText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
     LaunchedEffect(messages.size) {
@@ -60,6 +62,14 @@ fun ChatScreen(viewModel: ChatViewModel) {
             .fillMaxSize()
             .padding(16.dp)
     ) {
+        Text(
+            text = LocalContext.current.getString(R.string.my_device_in_network, viewModel.localName),
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp)
+        )
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -113,12 +123,35 @@ fun ChatScreen(viewModel: ChatViewModel) {
                         DeviceStatus.CONNECTION_FAILED -> stringResource(R.string.device_connection_failed)
                         DeviceStatus.FOUND -> ""
                     }
-                    Text(
-                        text = "${device.name} (${device.address})${if (statusText.isNotEmpty()) " — $statusText" else ""}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.padding(bottom = 2.dp)
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = device.name,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            if (statusText.isNotEmpty()) {
+                                Text(
+                                    text = statusText,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Button(
+                            onClick = { viewModel.connectToDevice(device.address) },
+                            enabled = device.status != DeviceStatus.CONNECTED && device.status != DeviceStatus.CONNECTING,
+                            modifier = Modifier.padding(start = 8.dp)
+                        ) {
+                            Text(stringResource(R.string.connect))
+                        }
+                    }
                 }
             }
         }
@@ -142,6 +175,26 @@ fun ChatScreen(viewModel: ChatViewModel) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .padding(top = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = stringResource(R.string.recipient_label) + ":",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            OutlinedTextField(
+                value = recipientText,
+                onValueChange = { recipientText = it },
+                modifier = Modifier.weight(1f),
+                placeholder = { Text(stringResource(R.string.recipient_hint)) },
+                singleLine = true
+            )
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
                 .padding(top = 8.dp),
             verticalAlignment = Alignment.Bottom,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -156,7 +209,10 @@ fun ChatScreen(viewModel: ChatViewModel) {
             )
             Button(
                 onClick = {
-                    viewModel.sendMessage(inputText)
+                    val recipient = recipientText.trim().let { t ->
+                        if (t.isEmpty() || t.equals("*", ignoreCase = true)) RECIPIENT_ALL else t
+                    }
+                    viewModel.sendMessage(inputText, recipient)
                     inputText = ""
                 }
             ) {

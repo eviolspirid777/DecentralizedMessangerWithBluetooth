@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.myapplication.bluetooth.BluetoothMeshManager
 import com.example.myapplication.bluetooth.FoundDeviceInfo
+import com.example.myapplication.bluetooth.RECIPIENT_ALL
 import com.example.myapplication.data.ChatMessage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -55,12 +56,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun sendMessage(text: String) {
+    fun sendMessage(text: String, recipientAddress: String = RECIPIENT_ALL) {
         if (text.isBlank()) return
         val message = ChatMessage(
             messageId = UUID.randomUUID().toString(),
             senderAddress = manager.getLocalAddress(),
             senderDisplayName = manager.getLocalName(),
+            recipientAddress = recipientAddress,
             text = text.trim(),
             timestamp = System.currentTimeMillis()
         )
@@ -73,6 +75,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun stopDiscovery() {
         manager.stopDiscovery()
+    }
+
+    fun connectToDevice(address: String) {
+        manager.connectToDevice(address)
     }
 
     override fun onCleared() {

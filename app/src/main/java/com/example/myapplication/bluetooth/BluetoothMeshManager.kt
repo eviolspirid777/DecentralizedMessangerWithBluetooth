@@ -19,7 +19,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -68,8 +67,6 @@ class BluetoothMeshManager(private val context: Context) {
     private val connectionMutex = Mutex()
     /** Таймаут одной попытки подключения (мс). */
     private val connectionTimeoutMs = 12_000L
-    /** Задержка перед попыткой сопряжения с ещё не сопряжёнными устройствами (мс). */
-    private val unbondedDelayMs = 15_000L
 
     var onMessageReceived: ((ChatMessage) -> Unit)? = null
     var onPeersCountChanged: ((Int) -> Unit)? = null
@@ -156,25 +153,44 @@ class BluetoothMeshManager(private val context: Context) {
             context.registerReceiver(discoveryReceiver, filter)
         }
         registerBondStateReceiverIfNeeded()
-        tryConnectBondedDevicesFirst()
+        addBondedDevicesToList()
         adapter.cancelDiscovery()
         discoveryInProgress = true
         notifyDiscoveryInProgress()
         adapter.startDiscovery()
     }
 
-    /** Сначала ставим в очередь подключение ко всем уже сопряжённым устройствам. */
+    /** Добавляет уже сопряжённые устройства в список (без подключения — пользователь нажимает «Подключиться»). */
     @SuppressLint("MissingPermission")
-    private fun tryConnectBondedDevicesFirst() {
+    private fun addBondedDevicesToList() {
         adapter?.bondedDevices?.orEmpty()?.forEach { device ->
             val address = device.address
             if (address == getLocalAddress()) return@forEach
-            if (sockets.any { it.address == address }) return@forEach
             if (foundDevices.any { it.address == address }) return@forEach
             val name = device.name?.takeIf { it.isNotBlank() } ?: address
             foundDevices.add(FoundDeviceInfo(name = name, address = address, status = DeviceStatus.FOUND))
-            notifyFoundDevices()
-            tryConnectAsClient(device)
+        }
+        notifyFoundDevices()
+    }
+
+    /** Подключиться к устройству по адресу (по нажатию «Подключиться» в списке). Сопряжение при необходимости. */
+    @SuppressLint("MissingPermission")
+    fun connectToDevice(address: String) {
+        if (adapter == null) return
+        if (address == getLocalAddress()) return
+        if (sockets.any { it.address == address }) return
+        val device = try {
+            adapter.getRemoteDevice(address)
+        } catch (e: IllegalArgumentException) {
+            return
+        }
+        when (device.bondState) {
+            BluetoothDevice.BOND_BONDED -> tryConnectAsClient(device)
+            BluetoothDevice.BOND_NONE -> {
+                pendingBondAddresses.add(address)
+                device.createBond()
+            }
+            BluetoothDevice.BOND_BONDING -> { /* ждём BOND_BONDED в onBondStateChanged */ }
         }
     }
 
@@ -211,22 +227,6 @@ class BluetoothMeshManager(private val context: Context) {
         if (existing >= 0) return
         foundDevices.add(FoundDeviceInfo(name = name, address = address, status = DeviceStatus.FOUND))
         notifyFoundDevices()
-        when (device.bondState) {
-            BluetoothDevice.BOND_BONDED -> tryConnectAsClient(device)
-            BluetoothDevice.BOND_NONE, BluetoothDevice.BOND_BONDING -> {
-                scope.launch {
-                    delay(unbondedDelayMs)
-                    if (sockets.any { it.address == address }) return@launch
-                    when (device.bondState) {
-                        BluetoothDevice.BOND_BONDED -> tryConnectAsClient(device)
-                        BluetoothDevice.BOND_NONE -> if (pendingBondAddresses.add(address)) {
-                            device.createBond()
-                        }
-                        else -> { /* BOND_BONDING — ждём BOND_BONDED в onBondStateChanged */ }
-                    }
-                }
-            }
-        }
     }
 
     @SuppressLint("MissingPermission")
@@ -355,10 +355,12 @@ class BluetoothMeshManager(private val context: Context) {
         }
     }
 
-    /** Sends the message to all connected peers (flooding starts from here). */
+    /** Отправляет сообщение в сеть. В чате показываем только если отправили «всем» (*). */
     fun sendMessage(message: ChatMessage) {
         seenMessageIds.add(message.messageId)
-        onMessageReceived?.invoke(message)
+        if (message.recipientAddress == RECIPIENT_ALL) {
+            onMessageReceived?.invoke(message)
+        }
         broadcastRaw(message.toWireFormat(), fromAddress = null)
     }
 
@@ -391,10 +393,20 @@ class BluetoothMeshManager(private val context: Context) {
                 if (line.isBlank()) continue
                 try {
                     val message = parseWireFormat(line)
-                    if (seenMessageIds.add(message.messageId)) {
+                    if (!seenMessageIds.add(message.messageId)) continue
+                    val myAddress = getLocalAddress()
+                    val myName = getLocalName()
+                    val recipient = message.recipientAddress
+                    val isForMe = recipient == RECIPIENT_ALL ||
+                        recipient.equals(myAddress, ignoreCase = true) ||
+                        recipient.equals(myName, ignoreCase = true)
+                    if (isForMe) {
                         onMessageReceived?.let { callback ->
                             scope.launch { withContext(Dispatchers.Main) { callback(message) } }
                         }
+                    }
+                    val shouldForward = recipient == RECIPIENT_ALL || !isForMe
+                    if (shouldForward) {
                         broadcastRaw(line + "\n", fromAddress = peer.address)
                     }
                 } catch (_: Exception) {

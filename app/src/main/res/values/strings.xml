@@ -11,6 +11,11 @@
     <string name="device_connected">успешно подключено</string>
     <string name="device_connecting">подключение…</string>
     <string name="device_connection_failed">подключение неуспешно</string>
+    <string name="connect">Подключиться</string>
+    <string name="recipient_all">Всем</string>
+    <string name="recipient_label">Кому</string>
+    <string name="recipient_hint">Всем (*) или имя устройства</string>
+    <string name="my_device_in_network">Имя в сети: %s</string>
     <string name="notification_channel_name">Mesh-чат</string>
     <string name="notification_channel_description">Работа меш-сети в фоне</string>
     <string name="notification_title">Bluetooth Mesh Chat активен</string>
